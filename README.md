@@ -32,7 +32,6 @@ pytest                            # run the whole suite
 You should see something like:
 
 ```
-======================== 65 passed in ~15s ========================
 ```
 
 No API keys, no `.env` file, no local server to start — `tests/` talks straight to `https://dummyjson.com`.
@@ -101,6 +100,8 @@ This is API testing's version of the UI world's **Page Object Model** — same i
 | Copy-pasted request boilerplate across test files | Shared request shapes (pagination, headers, auth) live in one place |
 
 **Rule for contributors:** if you find yourself typing `session.get(...)` or `BASE_URL` inside a file under `tests/`, stop — that logic belongs in `services/`.
+
+Generic passthrough methods like `list(self, **params)` mean new query params — pagination, sorting, whatever the API adds — don't need a new service method at all. `products_api.list(sortBy="price", order="asc")` already works because `list()` forwards `**params` straight through; see `test_lists_products_sorted_ascending_by_price` in `tests/test_products.py` for the resulting test.
 
 ## Fixtures & the auth flow
 
@@ -201,7 +202,7 @@ That's the whole pattern: **call the service method, assert on `response.status_
 
 | Resource | Create | Read | Update | Delete |
 |---|---|---|---|---|
-| Products | `POST /products/add` | `GET /products`, `/products/{id}`, `/products/search?q=`, `/products/categories`, `/products/category/{category}` | `PUT`/`PATCH /products/{id}` | `DELETE /products/{id}` |
+| Products | `POST /products/add` | `GET /products` (+ `sortBy=`/`order=`), `/products/{id}`, `/products/search?q=`, `/products/categories`, `/products/category/{category}` | `PUT`/`PATCH /products/{id}` | `DELETE /products/{id}` |
 | Users | `POST /users/add` | `GET /users`, `/users/{id}`, `/users/search?q=`, `/users/filter?key=&value=` | `PUT`/`PATCH /users/{id}` | `DELETE /users/{id}` |
 | Auth | — | `POST /auth/login`, `GET /auth/me` (Bearer token) | `POST /auth/refresh` | — |
 | Carts | `POST /carts/add` | `GET /carts`, `/carts/{id}`, `/carts/user/{userId}` | `PUT`/`PATCH /carts/{id}` | `DELETE /carts/{id}` |

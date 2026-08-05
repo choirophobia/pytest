@@ -45,6 +45,20 @@ class TestRead:
             haystack = f"{product['title']} {product['description']}".lower()
             assert "phone" in haystack
 
+    def test_lists_products_sorted_ascending_by_price(self):
+        response = products_api.list(sortBy="price", order="asc", limit=10)
+
+        assert response.status_code == 200
+        prices = [product["price"] for product in response.json()["products"]]
+        assert prices == sorted(prices)
+
+    def test_lists_products_sorted_descending_by_title(self):
+        response = products_api.list(sortBy="title", order="desc", limit=10)
+
+        assert response.status_code == 200
+        titles = [product["title"] for product in response.json()["products"]]
+        assert titles == sorted(titles, reverse=True)
+
     def test_lists_product_categories(self):
         response = products_api.get_categories()
 
