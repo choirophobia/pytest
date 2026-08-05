@@ -32,7 +32,7 @@ pytest                            # run the whole suite
 You should see something like:
 
 ```
-======================== 57 passed in ~15s ========================
+======================== 65 passed in ~15s ========================
 ```
 
 No API keys, no `.env` file, no local server to start — `tests/` talks straight to `https://dummyjson.com`.
@@ -217,6 +217,9 @@ These aren't bugs in the suite — they're real, verified behaviors of the live 
 - **Occasional `429` instead of `404`.** Under repeated runs, "not found" lookups (and even some writes) can get rate-limited rather than cleanly 404ing. Negative tests for out-of-range IDs assert `status_code in (404, 429)` instead of a strict `== 404`.
 - **`GET /auth/me` cookie fallback.** `POST /auth/login` sets `accessToken`/`refreshToken` cookies on top of returning them in the JSON body. Because all service objects share one `requests.Session` for connection reuse, a later "no token" call would silently succeed on those leftover cookies if not handled — `AuthApi.me()` explicitly clears the session's cookies when called without a token, so the "missing token" negative test is genuinely unauthenticated.
 - **Invalid JWTs can return `500`.** A syntactically-invalid bearer token on `GET /auth/me` has been observed to return `500` rather than `401`/`403`. That specific negative test accepts all three (`401`, `403`, `500`).
+- **ID validation isn't consistent across resources.** A non-numeric ID on `/products/{id}` returns `404` (treated as "not found"), but the same shape of request on `/users/{id}` returns `400` (treated as a malformed request). `test_products.py` and `test_users.py` each assert what their resource actually does rather than assuming the two are interchangeable — don't copy a negative-case assertion from one resource's test file into another's without checking live.
+- **"No matches" isn't an error.** `GET /users/search?q=` with no hits, or `GET /users/filter` with a key that doesn't exist, both return `200` with an empty `users` array and `total: 0` — not a `404`. Same expectation applies if you add search/filter coverage for other resources.
+- **Writable endpoints don't validate required fields.** `POST /users/add` with an empty `{}` payload still returns `201` with blank/`null` fields filled in — DummyJSON doesn't enforce "required" fields on create. A negative test asserting a `4xx` for a missing field would be testing behavior the API doesn't actually have.
 
 ## Extending to a new resource
 

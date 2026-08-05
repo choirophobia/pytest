@@ -3,6 +3,7 @@ import pytest
 from services.users_api import users_api
 
 NOT_FOUND_STATUSES = (404, 429)
+BAD_REQUEST_STATUSES = (400, 429)
 
 
 class TestRead:
@@ -52,6 +53,29 @@ class TestRead:
         assert "users" in body
         for user in body["users"]:
             assert user["hair"]["color"] == "Brown"
+
+    def test_lists_users_sorted_ascending_by_age(self):
+        response = users_api.list(sortBy="age", order="asc", limit=10)
+
+        assert response.status_code == 200
+        ages = [user["age"] for user in response.json()["users"]]
+        assert ages == sorted(ages)
+
+    def test_search_with_no_matches_returns_empty_list(self):
+        response = users_api.search("zzzznomatchxyz")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["total"] == 0
+        assert body["users"] == []
+
+    def test_filter_with_unknown_key_returns_empty_list_not_an_error(self):
+        response = users_api.filter("notarealkey", "x")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["total"] == 0
+        assert body["users"] == []
 
 
 class TestCreate:
@@ -117,3 +141,31 @@ class TestNegativeCases:
         response = users_api.remove(999999)
 
         assert response.status_code in NOT_FOUND_STATUSES
+
+    def test_get_by_id_zero_returns_not_found(self):
+        response = users_api.get_by_id(0)
+
+        assert response.status_code in NOT_FOUND_STATUSES
+
+    def test_get_by_id_negative_returns_not_found(self):
+        response = users_api.get_by_id(-1)
+
+        assert response.status_code in NOT_FOUND_STATUSES
+
+    def test_get_by_id_with_non_numeric_id_returns_bad_request(self):
+        # Unlike /products/{id}, which 404s on a non-numeric id, /users/{id}
+        # rejects it outright with a 400 - the two resources validate the
+        # path param differently.
+        response = users_api.get_by_id("not-a-valid-id")
+
+        assert response.status_code in BAD_REQUEST_STATUSES
+
+    def test_update_with_non_numeric_id_returns_bad_request(self):
+        response = users_api.update("not-a-valid-id", {"firstName": "Does not matter"})
+
+        assert response.status_code in BAD_REQUEST_STATUSES
+
+    def test_delete_with_non_numeric_id_returns_bad_request(self):
+        response = users_api.remove("not-a-valid-id")
+
+        assert response.status_code in BAD_REQUEST_STATUSES
