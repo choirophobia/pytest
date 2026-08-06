@@ -1,0 +1,45 @@
+name: Nightly API Test Suite
+
+"on":
+  schedule:
+    # 06:00 WIB (UTC+7) == 23:00 UTC the previous day
+    - cron: "0 23 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run pytest
+        id: run_tests
+        continue-on-error: true
+        run: pytest -v --json-report --json-report-file=report.json
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-report
+          path: report.json
+          retention-days: 14
+
+      - name: Notify Discord
+        if: always()
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python scripts/notify_discord.py report.json
+
+      - name: Fail workflow if tests failed
+        if: steps.run_tests.outcome == 'failure'
+        run: exit 1

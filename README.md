@@ -12,6 +12,7 @@ This is the pytest/Python port of a sibling Jest/JavaScript suite: same target A
 - [Fixtures & the auth flow](#fixtures--the-auth-flow)
 - [Test conventions](#test-conventions)
 - [Running tests](#running-tests)
+- [CI/CD: nightly run + Discord notifications](#cicd-nightly-run--discord-notifications)
 - [Walkthrough: adding a new test](#walkthrough-adding-a-new-test)
 - [Endpoint reference](#endpoint-reference)
 - [Known quirks of the target API](#known-quirks-of-the-target-api)
@@ -167,6 +168,34 @@ pytest -v                                 # verbose, one line per test
 pytest -m negative                        # only negative/error-case tests
 pytest -m "not negative"                  # everything except negative cases
 pytest -n auto                            # parallel run (needs pytest-xdist, already in requirements.txt)
+```
+
+## CI/CD: nightly run + Discord notifications
+
+`.github/workflows/nightly-tests.yml` runs the full suite automatically **every day at 06:00 WIB** (`0 23 * * *` in UTC — WIB is UTC+7 with no DST, so 23:00 UTC the day before lines up with 06:00 WIB), and can also be triggered manually from the Actions tab (`workflow_dispatch`).
+
+**Pipeline steps:**
+
+1. Checkout + install `requirements.txt`.
+2. `pytest -v --json-report --json-report-file=report.json` — the [`pytest-json-report`](https://pypi.org/project/pytest-json-report/) plugin writes a structured summary (pass/fail/error/skip counts, per-test outcomes, duration) alongside the normal console output. The step uses `continue-on-error: true` so a red test run doesn't skip the notification step below.
+3. `report.json` is uploaded as a build artifact (14-day retention) for when you need the full detail, not just the summary.
+4. `scripts/notify_discord.py report.json` builds a Discord embed from the report and posts it to your webhook — this always runs (`if: always()`), pass or fail.
+5. A final step re-fails the job if the test step failed, so the Actions tab still shows red — `continue-on-error` in step 2 only exists to let the notification step run, it doesn't hide real failures.
+
+**The Discord message is explicitly flagged as coming from pytest** — sent under the `pytest` username, with the embed footer reading `Source: pytest · <repo> · run #<n>`, so it's unambiguous in a channel that gets messages from other bots/CI tools too. It's color-coded (green = all passed, red = any failure/error) and, on failure, lists up to 10 failing test node IDs directly in the embed.
+
+**One-time setup required** (not something this repo can do for you):
+
+1. In Discord: **Server Settings → Integrations → Webhooks → New Webhook**, pick the channel, copy the webhook URL.
+2. In GitHub: **Repo Settings → Secrets and variables → Actions → New repository secret**, name it `DISCORD_WEBHOOK_URL`, paste the URL.
+
+Without that secret, the workflow's test step still runs fine — only the notification step fails (loudly, in the Actions log), since a missing webhook is treated as a configuration error rather than something to silently swallow.
+
+To test the notification path locally before relying on the schedule:
+
+```bash
+pytest --json-report --json-report-file=report.json
+DISCORD_WEBHOOK_URL="<your webhook url>" python scripts/notify_discord.py report.json
 ```
 
 ## Walkthrough: adding a new test
