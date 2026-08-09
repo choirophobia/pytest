@@ -33,6 +33,7 @@ pytest                            # run the whole suite
 You should see something like:
 
 ```
+======================== 67 passed in ~15s ========================
 ```
 
 No API keys, no `.env` file, no local server to start — `tests/` talks straight to `https://dummyjson.com`.
@@ -157,6 +158,15 @@ Ask for `auth_token` when you just need a bearer token, `auth_tokens` when you n
 
 - **No state resets between tests.** DummyJSON's writes are simulated and never persisted, so there's nothing to clean up in `beforeEach`/fixture teardown.
 - **Every resource has at least one negative test**: an out-of-range ID, a bad-auth case, or a missing required field.
+- **Check field types, not just presence.** `"price" in body` catches a missing field but not a `price` that silently became a string. Prefer `isinstance(body["price"], (int, float)) and body["price"] > 0` over `"price" in body` wherever the field's shape actually matters to the test:
+
+  ```python
+  assert isinstance(body["age"], int) and body["age"] > 0
+  assert body["gender"] in ("male", "female")
+  assert re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$", body["deletedOn"])
+  ```
+
+- **When a result set is smaller than the default page size, assert the count matches exactly**, not just `>= 0`. If a search/filter/category is known to return fewer than 30 results (the default `limit`), `body["total"] == len(body["products"])` is a stronger check than merely confirming every returned item matches the query — it also catches results silently going missing. Verify the count live before relying on this; it doesn't hold once a result set exceeds the page size.
 
 ## Running tests
 
@@ -250,6 +260,7 @@ These aren't bugs in the suite — they're real, verified behaviors of the live 
 - **ID validation isn't consistent across resources.** A non-numeric ID on `/products/{id}` returns `404` (treated as "not found"), but the same shape of request on `/users/{id}` returns `400` (treated as a malformed request). `test_products.py` and `test_users.py` each assert what their resource actually does rather than assuming the two are interchangeable — don't copy a negative-case assertion from one resource's test file into another's without checking live.
 - **"No matches" isn't an error.** `GET /users/search?q=` with no hits, or `GET /users/filter` with a key that doesn't exist, both return `200` with an empty `users` array and `total: 0` — not a `404`. Same expectation applies if you add search/filter coverage for other resources.
 - **Writable endpoints don't validate required fields.** `POST /users/add` with an empty `{}` payload still returns `201` with blank/`null` fields filled in — DummyJSON doesn't enforce "required" fields on create. A negative test asserting a `4xx` for a missing field would be testing behavior the API doesn't actually have.
+- **`PUT` merges instead of replacing.** By HTTP convention, `PUT` implies a full replacement of the resource. DummyJSON's `PUT /products/{id}` and `PUT /users/{id}` don't do that — the echoed response still carries every field you didn't send, identically to `PATCH`. Update tests assert that untouched fields (e.g. `price`, `email`) are still present in a `PUT` response rather than assuming they'd be dropped.
 
 ## Extending to a new resource
 

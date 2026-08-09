@@ -1,3 +1,5 @@
+import re
+
 import pytest
 
 from services.users_api import users_api
@@ -17,6 +19,10 @@ class TestRead:
         assert body["skip"] == 0
         assert body["total"] > 0
         assert len(body["users"]) == 30
+        for user in body["users"]:
+            assert isinstance(user["id"], int)
+            assert isinstance(user["firstName"], str) and user["firstName"]
+            assert isinstance(user["email"], str) and "@" in user["email"]
 
     def test_lists_users_with_limit_and_skip(self):
         response = users_api.list(limit=5, skip=10)
@@ -32,8 +38,13 @@ class TestRead:
         assert response.status_code == 200
         body = response.json()
         assert body["id"] == 1
-        assert "firstName" in body
-        assert "email" in body
+        assert isinstance(body["firstName"], str) and body["firstName"]
+        assert isinstance(body["email"], str) and "@" in body["email"]
+        assert isinstance(body["age"], int) and body["age"] > 0
+        assert body["gender"] in ("male", "female")
+        assert isinstance(body["username"], str) and body["username"]
+        assert "city" in body["address"]
+        assert "country" in body["address"]
 
     def test_searches_users_by_query(self):
         response = users_api.search("Emily")
@@ -41,6 +52,9 @@ class TestRead:
         assert response.status_code == 200
         body = response.json()
         assert "users" in body
+        # "Emily" matches fewer users than the default page size (30), so
+        # every match is returned in one page - total and returned count agree.
+        assert body["total"] == len(body["users"])
         for user in body["users"]:
             haystack = f"{user['firstName']} {user['lastName']} {user['email']}".lower()
             assert "emily" in haystack
@@ -51,6 +65,9 @@ class TestRead:
         assert response.status_code == 200
         body = response.json()
         assert "users" in body
+        # this filter matches fewer users than the default page size, so the
+        # whole match set is returned in one page.
+        assert body["total"] == len(body["users"])
         for user in body["users"]:
             assert user["hair"]["color"] == "Brown"
 
@@ -89,7 +106,7 @@ class TestCreate:
         assert body["firstName"] == payload["firstName"]
         assert body["lastName"] == payload["lastName"]
         assert body["age"] == payload["age"]
-        assert "id" in body
+        assert isinstance(body["id"], int)
 
 
 class TestUpdate:
@@ -102,6 +119,10 @@ class TestUpdate:
         body = response.json()
         assert body["id"] == 1
         assert body["firstName"] == payload["firstName"]
+        # DummyJSON's PUT merges rather than fully replacing the resource -
+        # fields outside the payload survive in the echoed response.
+        assert "lastName" in body
+        assert "email" in body
 
     def test_partially_updates_a_user_with_patch(self):
         payload = {"age": 40}
@@ -112,6 +133,8 @@ class TestUpdate:
         body = response.json()
         assert body["id"] == 1
         assert body["age"] == payload["age"]
+        assert "firstName" in body
+        assert "email" in body
 
 
 class TestDelete:
@@ -122,7 +145,11 @@ class TestDelete:
         body = response.json()
         assert body["id"] == 1
         assert body["isDeleted"] is True
-        assert "deletedOn" in body
+        # e.g. "2026-08-09T14:40:23.561Z"
+        assert re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$", body["deletedOn"])
+        # the full user is echoed back, not just an id/flag pair
+        assert isinstance(body["firstName"], str) and body["firstName"]
+        assert "email" in body
 
 
 @pytest.mark.negative
