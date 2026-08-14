@@ -17,6 +17,7 @@ This is the pytest/Python port of a sibling Jest/JavaScript suite: same target A
 - [Endpoint reference](#endpoint-reference)
 - [Known quirks of the target API](#known-quirks-of-the-target-api)
 - [Extending to a new resource](#extending-to-a-new-resource)
+- [Cucumber/BDD prototype](#cucumberbdd-prototype)
 
 ## Quickstart
 
@@ -272,3 +273,43 @@ To cover a resource not yet in this suite (comments, todos, quotes, recipes — 
 2. Add `services/<resource>_api.py` following the existing services as a template — one method per endpoint, all going through the shared `session`.
 3. Add `tests/test_<resource>.py` with `TestRead` / `TestCreate` / `TestUpdate` / `TestDelete` / `TestNegativeCases` classes.
 4. Run `pytest tests/test_<resource>.py -v` and confirm real API responses match your assertions before trusting the test — DummyJSON's response shapes vary by resource (e.g. `categories` returns objects, not strings) and are worth checking with a quick `curl` first.
+
+## Cucumber/BDD prototype
+
+Cucumber itself is a Ruby/JVM/JS tool; its Python equivalent is [`pytest-bdd`](https://pytest-bdd.readthedocs.io/) — same idea, same Gherkin `Given`/`When`/`Then` syntax, running on top of pytest instead of a separate runner. `features/products.feature` and `tests/step_defs/test_products_bdd.py` are a small prototype covering three of the product scenarios already in `test_products.py`, so you can compare the two styles directly on the same resource.
+
+```gherkin
+# features/products.feature
+Scenario: Fetching a product that does not exist
+  Given a product with id 999999
+  When I request the product by id
+  Then the response status code indicates not found
+```
+
+```python
+# tests/step_defs/test_products_bdd.py
+@given(parsers.parse("a product with id {product_id:d}"), target_fixture="context")
+def a_product_with_id(product_id):
+    return {"product_id": product_id}
+
+@when("I request the product by id")
+def request_product_by_id(context):
+    context["response"] = products_api.get_by_id(context["product_id"])
+
+@then("the response status code indicates not found")
+def response_status_code_indicates_not_found(context):
+    assert context["response"].status_code in NOT_FOUND_STATUSES
+```
+
+The step definitions call the exact same `products_api` service object as the rest of the suite — the Service Object Model is what made this prototype cheap to build; nothing about it is BDD-specific. Run it on its own with `pytest tests/step_defs/test_products_bdd.py -v`, or as part of the normal `pytest` run (it collects alongside everything else, no separate command needed).
+
+**Where it's stronger:** the `.feature` file is genuinely readable by a non-programmer — a PM or manual QA tester can review `products.feature` and understand exactly what's being verified without reading Python. That's Cucumber's entire reason to exist.
+
+**Where it's weaker, for this project specifically:**
+
+- **Indirection tax.** Testing "creating a product returns 201" now takes a Gherkin scenario *and* three step definitions (`given`/`when`/`then`), versus one `def test_creates_a_new_product():` in plain pytest. The service objects already read close to English (`products_api.create(payload)`); Gherkin adds a layer on top of something that wasn't opaque to begin with.
+- **Passing data between steps is awkward.** Plain pytest just uses local variables. Step definitions communicate through a shared fixture (`context` here, via `target_fixture`) that has to be threaded through every step — visible in the boilerplate above.
+- **No distinct audience.** BDD earns its keep when non-engineers (product, QA leads, business stakeholders) read or write the `.feature` files. This is a solo portfolio/practice project — the `.feature` file's readability benefit has no one else to read it.
+- **Extra moving parts, version friction included.** A second file per scenario (feature + step defs) to keep in sync, a step-matching layer that can silently fail to bind (typo the Gherkin text and the step just doesn't match, versus a Python `NameError`), and — as observed running this prototype on pytest 9.1.1 — internal `PytestRemovedIn10Warning` deprecation warnings from `pytest-bdd` 8.1.0's own fixture registration code, not from anything in this repo. That's a signal the plugin's compatibility with the latest pytest is still catching up, worth knowing before depending on it further.
+
+**Bottom line:** it fits — the service objects underneath don't care whether they're called from a plain `def test_...` or a Gherkin step — but for this specific project (one contributor, no non-technical reviewers), the existing plain-pytest suite is the better default. Worth reaching for if this suite ever needs to be readable by people who don't write Python.
