@@ -12,6 +12,7 @@ This is the pytest/Python port of a sibling Jest/JavaScript suite: same target A
 - [Fixtures & the auth flow](#fixtures--the-auth-flow)
 - [Test conventions](#test-conventions)
 - [Running tests](#running-tests)
+- [Test order randomization (pytest-randomly)](#test-order-randomization-pytest-randomly)
 - [CI/CD: nightly run + Discord notifications](#cicd-nightly-run--discord-notifications)
 - [Walkthrough: adding a new test](#walkthrough-adding-a-new-test)
 - [Endpoint reference](#endpoint-reference)
@@ -180,6 +181,24 @@ pytest -m negative                        # only negative/error-case tests
 pytest -m "not negative"                  # everything except negative cases
 pytest -n auto                            # parallel run (needs pytest-xdist, already in requirements.txt)
 ```
+
+## Test order randomization (pytest-randomly)
+
+`pytest-randomly` (in `requirements.txt`) shuffles the test execution order on every run — no config, no code changes, it activates automatically once installed. This matters more than it sounds like it should, and this project is proof: the `GET /auth/me` "missing token" negative test (`tests/test_auth.py`) used to silently pass for the wrong reason. `POST /auth/login` sets `accessToken`/`refreshToken` cookies on the shared `requests.Session`, and if the "no token" test happened to run *after* a login in the same session, it rode on those leftover cookies instead of actually being unauthenticated — a bug that only a specific test order would expose. It was already caught and fixed (`AuthApi.me()` clears the session's cookies when called without a token — see [Known quirks](#known-quirks-of-the-target-api)), but that fix relied on catching it once by hand.
+
+**Why it matters here specifically:** every service object shares one `requests.Session` (`services/api_client.py`) for connection reuse, by design (see [The Service Object Model](#the-service-object-model)). That's exactly the kind of shared mutable state — cookies, but it could just as easily be something else later — where one test's side effect leaks into another's result depending on what ran first. A fixed, alphabetical/file-declaration test order can hide that coupling indefinitely, because the "accidentally correct" order is the one that always runs. Randomizing order turns "happens to pass in this order" into "actually independent," which is what a test suite is supposed to guarantee in the first place.
+
+**What running it found:** the full 70-test suite was run repeatedly with different random orders (seeds `1451414544`, `42`, and others) against the live API. Most runs passed cleanly; one run had a single failure (`test_fetching_a_single_product_by_id`, a normally-trivial `GET /products/1`) that did not reproduce when that same test was immediately rerun alone. That points to a live-API rate-limit blip from the sheer number of repeated back-to-back runs during this stress test, not an order-dependent bug — a real, if unglamorous, distinction worth being honest about rather than only reporting the clean runs. Net result: no *other* hidden order-dependent coupling currently exists beyond the cookie-leak bug already fixed. The value going forward is continuous, not one-time — since CI already installs from `requirements.txt` (see below), the nightly run now randomizes order automatically too, so if a future change reintroduces this class of bug, it gets caught instead of silently passing forever.
+
+**Reproducing a failure:** every run prints its seed near the top of the output (`Using --randomly-seed=1451414544`). If a run fails, rerun with that exact seed to reproduce the same order deterministically:
+
+```bash
+pytest --randomly-seed=1451414544 -v
+```
+
+To temporarily go back to declaration order (e.g. while debugging something unrelated to ordering): `pytest -p no:randomly`.
+
+**One important thing this surfaced along the way:** one of the repeated runs above took over 4 minutes instead of the usual ~15 seconds — not an order-dependence bug, but a stalled connection to the live API hanging silently, because `services/api_client.py`'s shared session never set a request timeout. `requests` has no session-level default timeout on its own, so a single slow/stuck response could hang a test (and a CI run) indefinitely instead of failing fast. Fixed alongside this change: the shared session now wraps `requests.Session.request` to inject a 15-second default timeout on every call unless a caller explicitly overrides it — verified against a non-routable address to confirm it actually raises `requests.exceptions.Timeout` rather than hanging.
 
 ## CI/CD: nightly run + Discord notifications
 
