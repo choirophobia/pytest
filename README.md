@@ -1,5 +1,7 @@
 # DummyJSON API Tests (pytest)
 
+[![Nightly API Test Suite](https://github.com/choirophobia/pytest/actions/workflows/nightly-tests.yml/badge.svg)](https://github.com/choirophobia/pytest/actions/workflows/nightly-tests.yml)
+
 An end-to-end API test suite against the live [DummyJSON](https://dummyjson.com) API, built with `pytest` and `requests`. It's a QA practice/portfolio project that demonstrates CRUD testing, auth-flow testing, and negative/error-case testing against a real HTTP API — no mocks, no local server.
 
 This is the pytest/Python port of a sibling Jest/JavaScript suite: same target API, same resource coverage, same test cases, different stack. If you already know one, the other should feel familiar.
@@ -211,6 +213,8 @@ To temporarily go back to declaration order (e.g. while debugging something unre
 3. `report.json` is uploaded as a build artifact (14-day retention) for when you need the full detail, not just the summary.
 4. `scripts/notify_discord.py report.json` builds a Discord embed from the report and posts it to your webhook — this always runs (`if: always()`), pass or fail.
 5. A final step re-fails the job if the test step failed, so the Actions tab still shows red — `continue-on-error` in step 2 only exists to let the notification step run, it doesn't hide real failures.
+
+**The badge at the top of this README** is GitHub's own workflow status badge (`.../actions/workflows/nightly-tests.yml/badge.svg`) — no setup, no external service, it's just a URL GitHub generates automatically for every workflow file. It reflects the *most recent* run (scheduled or manual), so it's a live, no-click answer to "is the nightly suite currently green against the real API," visible to anyone who opens the repo. Clicking it goes straight to the Actions run history.
 
 **The Discord message is explicitly flagged as coming from pytest** — sent under the `pytest` username, with the embed footer reading `Source: pytest · <repo> · run #<n>`, so it's unambiguous in a channel that gets messages from other bots/CI tools too. It's color-coded (green = all passed, red = any failure/error) and, on failure, lists up to 10 failing test node IDs directly in the embed.
 
