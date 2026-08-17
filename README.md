@@ -20,6 +20,7 @@ This is the pytest/Python port of a sibling Jest/JavaScript suite: same target A
 - [Known quirks of the target API](#known-quirks-of-the-target-api)
 - [Extending to a new resource](#extending-to-a-new-resource)
 - [Cucumber/BDD prototype](#cucumberbdd-prototype)
+- [schemathesis prototype](#schemathesis-prototype)
 
 ## Quickstart
 
@@ -36,7 +37,7 @@ pytest                            # run the whole suite
 You should see something like:
 
 ```
-======================== 67 passed in ~15s ========================
+======================== 73 passed in ~15s ========================
 ```
 
 No API keys, no `.env` file, no local server to start — `tests/` talks straight to `https://dummyjson.com`.
@@ -367,3 +368,29 @@ The step definitions call the exact same `products_api` service object as the re
 - **Extra moving parts, version friction included.** A second file per scenario (feature + step defs) to keep in sync, a step-matching layer that can silently fail to bind (typo the Gherkin text and the step just doesn't match, versus a Python `NameError`), and — as observed running this prototype on pytest 9.1.1 — internal `PytestRemovedIn10Warning` deprecation warnings from `pytest-bdd` 8.1.0's own fixture registration code, not from anything in this repo. That's a signal the plugin's compatibility with the latest pytest is still catching up, worth knowing before depending on it further.
 
 **Bottom line:** it fits — the service objects underneath don't care whether they're called from a plain `def test_...` or a Gherkin step — but for this specific project (one contributor, no non-technical reviewers), the existing plain-pytest suite is the better default. Worth reaching for if this suite ever needs to be readable by people who don't write Python.
+
+## schemathesis prototype
+
+**The easy way to think about it:** every test in this suite so far is a test *you* thought to write — "what if the id is negative," "what if the search has no matches." [`schemathesis`](https://schemathesis.readthedocs.io/) flips that around: point it at a machine-readable description of an API (an OpenAPI/Swagger spec) and it *generates* hundreds of test cases from that description automatically — boundary values, unusual strings, edge cases a person might not think to type by hand — then checks every response actually matches what the spec promised.
+
+**The investigation part of this prototype, done first:** schemathesis needs that machine-readable spec to generate anything from — it can't fuzz an API it doesn't have a description of. DummyJSON doesn't publish one. Verified live before writing anything else:
+
+```
+GET https://dummyjson.com/openapi.json  -> 404
+GET https://dummyjson.com/swagger.json  -> 404
+GET https://dummyjson.com/docs          -> 200, but it's a plain HTML documentation page, not a spec file
+```
+
+So the honest options were: skip this entirely, or hand-write a minimal spec from what's already been verified live throughout this project and use *that*. `openapi/products.yaml` is the second option — a small OpenAPI 3.0 spec covering just the two read-only product endpoints (`GET /products`, `GET /products/{id}`), built from the same response shapes already verified for `schemas/product.json`.
+
+**Why read-only only:** DummyJSON's rate-limiting under repeated calls is already documented in [Known quirks](#known-quirks-of-the-target-api), and this project's own `CLAUDE.md` says to avoid hammering it in loops. Schemathesis firing dozens of generated requests at a live, rate-limit-sensitive API is exactly the kind of loop worth being conservative with — so this prototype deliberately covers GETs only (nothing it generates can mutate anything) and was run with `--mode positive --max-examples 5` to keep the request volume small and realistic rather than adversarial.
+
+```bash
+schemathesis run --mode positive --max-examples 5 --url https://dummyjson.com openapi/products.yaml
+```
+
+**What running it actually found:** 48 generated test cases across schemathesis's coverage/fuzzing/stateful phases, all passed, no issues, in about 12 seconds. To make sure that wasn't a rubber stamp, the same run was repeated against a deliberately broken copy of the spec (one extra required field that doesn't exist in the real response) — that correctly failed with `Response violates schema: 2 failures`, proving the check does something real rather than always passing.
+
+**The one thing that matters most about this prototype:** unlike the `pytest-bdd` prototype (which reuses the *exact same* verified assertions as the rest of the suite, just in a different syntax), this one is only as trustworthy as the hand-written spec it's checking against. A real, published OpenAPI spec is an independent contract — if the API drifts from it, that's the API's bug. This spec was written by the same person (well, session) writing the tests that check it, from the same observations — so it can't catch "I misunderstood the API," only "the API stopped matching what I already believed about it." That's still useful (it's the same kind of regression-catching value as `schemas/*.json`, generated automatically instead of by hand for these two endpoints) — just a meaningfully weaker guarantee than what schemathesis is actually built to provide, and worth being upfront about rather than overselling.
+
+**Bottom line:** worth having as a light, additional check on the two endpoints it covers, and cheap to extend to the rest of `openapi/products.yaml`'s siblings if this project ever adds more hand-written specs. If DummyJSON ever publishes a real OpenAPI spec, swap the `LOCATION` argument for that URL and the exact same command works against an actually-authoritative source instead.
