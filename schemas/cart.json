@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DummyJSON cart",
+  "type": "object",
+  "required": [
+    "id",
+    "products",
+    "total",
+    "discountedTotal",
+    "userId",
+    "totalProducts",
+    "totalQuantity"
+  ],
+  "properties": {
+    "id": { "type": "integer" },
+    "userId": { "type": "integer" },
+    "total": { "type": "number", "minimum": 0 },
+    "discountedTotal": { "type": "number", "minimum": 0 },
+    "totalProducts": { "type": "integer", "minimum": 0 },
+    "totalQuantity": { "type": "integer", "minimum": 0 },
+    "products": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "price", "quantity", "total"],
+        "properties": {
+          "id": { "type": "integer" },
+          "title": { "type": "string", "minLength": 1 },
+          "price": { "type": "number", "exclusiveMinimum": 0 },
+          "quantity": { "type": "integer", "exclusiveMinimum": 0 },
+          "total": { "type": "number", "minimum": 0 }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

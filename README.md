@@ -12,6 +12,7 @@ This is the pytest/Python port of a sibling Jest/JavaScript suite: same target A
 - [Fixtures & the auth flow](#fixtures--the-auth-flow)
 - [Test conventions](#test-conventions)
 - [Running tests](#running-tests)
+- [JSON Schema validation](#json-schema-validation)
 - [Test order randomization (pytest-randomly)](#test-order-randomization-pytest-randomly)
 - [CI/CD: nightly run + Discord notifications](#cicd-nightly-run--discord-notifications)
 - [Walkthrough: adding a new test](#walkthrough-adding-a-new-test)
@@ -36,7 +37,7 @@ pytest                            # run the whole suite
 You should see something like:
 
 ```
-======================== 67 passed in ~15s ========================
+======================== 73 passed in ~15s ========================
 ```
 
 No API keys, no `.env` file, no local server to start — `tests/` talks straight to `https://dummyjson.com`.
@@ -182,6 +183,40 @@ pytest -m negative                        # only negative/error-case tests
 pytest -m "not negative"                  # everything except negative cases
 pytest -n auto                            # parallel run (needs pytest-xdist, already in requirements.txt)
 ```
+
+## JSON Schema validation
+
+Most tests in this suite check individual fields one at a time — `assert response.status_code == 200`, `assert isinstance(body["price"], (int, float))`. That's precise but manual: every new field worth caring about needs its own line of Python. `tests/test_schema_validation.py` takes a different, complementary approach — it checks a response's **entire shape at once** against a schema file, using the [`jsonschema`](https://python-jsonschema.readthedocs.io/) library (the Python implementation of the [JSON Schema](https://json-schema.org/) standard).
+
+**The easy way to think about it:** a JSON Schema file is just a description of what a valid response looks like — which fields must exist, what type each one is, and any constraints (a `price` must be a positive number, a `gender` must be `"male"` or `"female"`). Feed a real API response and the schema to `jsonschema.validate()`, and it raises a `ValidationError` naming exactly what's wrong if the response doesn't match — no error at all if it does.
+
+```python
+# schemas/validator.py
+import jsonschema
+
+def assert_matches_schema(instance, schema_name):
+    schema = load_schema(schema_name)   # reads schemas/<schema_name>.json
+    jsonschema.validate(instance=instance, schema=schema)
+```
+
+```python
+# tests/test_schema_validation.py
+def test_product_matches_schema():
+    response = products_api.get_by_id(1)
+
+    assert response.status_code == 200
+    assert_matches_schema(response.json(), "product")
+```
+
+`schemas/product.json`, `schemas/user.json`, and `schemas/cart.json` cover the three most-tested resources, each hand-written from the *actual* live response (verified with `curl` first, same discipline as every other schema/assertion in this project — see [Extending to a new resource](#extending-to-a-new-resource)). Each schema only marks fields `required` that are confirmed always present, and leaves `additionalProperties: true` so a field DummyJSON adds later doesn't break the check — only a field going *missing*, changing *type*, or violating a stated constraint (like a negative price) does.
+
+**Why this is worth having as its own layer, not just more `assert` lines:**
+
+- **One schema check replaces dozens of individual field assertions**, and — unlike a hand-written `assert "price" in body` — it also implicitly checks that nothing *else* required went missing, without having to remember to add a line for each field.
+- **It's the automated version of something already happening by hand all over this project.** Half the "Known quirks" section exists because someone (a human, mid-session) ran `curl` to check a shape before trusting it. A schema check does that same comparison on every single run, forever, instead of only when someone remembers to look.
+- **The failure message is the shape difference itself** — `jsonschema.exceptions.ValidationError: -5 is less than or equal to the minimum of 0` — rather than a generic `AssertionError` you have to go trace back to a specific field.
+
+**Tradeoff:** a schema is another artifact that can go stale — if DummyJSON legitimately changes a field's type on purpose, the schema needs updating too, same as any assertion would. Keeping `additionalProperties: true` and only marking genuinely-always-present fields as `required` (rather than mirroring the entire response) keeps that maintenance burden small.
 
 ## Test order randomization (pytest-randomly)
 
