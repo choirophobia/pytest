@@ -245,7 +245,8 @@ To temporarily go back to declaration order (e.g. while debugging something unre
 2. `pytest -v --json-report --json-report-file=report.json` — the [`pytest-json-report`](https://pypi.org/project/pytest-json-report/) plugin writes a structured summary (pass/fail/error/skip counts, per-test outcomes, duration) alongside the normal console output. The step uses `continue-on-error: true` so a red test run doesn't skip the notification step below.
 3. `report.json` is uploaded as a build artifact (14-day retention) for when you need the full detail, not just the summary.
 4. `scripts/notify_discord.py report.json` builds a Discord embed from the report and posts it to your webhook — this always runs (`if: always()`), pass or fail.
-5. A final step re-fails the job if the test step failed, so the Actions tab still shows red — `continue-on-error` in step 2 only exists to let the notification step run, it doesn't hide real failures.
+5. On failure: files or updates a tracking GitHub Issue (see below). On success: closes that tracking issue if one was still open.
+6. A final step re-fails the job if the test step failed, so the Actions tab still shows red — `continue-on-error` in step 2 only exists to let steps 3-5 run regardless of outcome, it doesn't hide real failures.
 
 **The Discord message is explicitly flagged as coming from pytest** — sent under the `pytest` username, with the embed footer reading `Source: pytest · <repo> · run #<n>`, so it's unambiguous in a channel that gets messages from other bots/CI tools too. It's color-coded (green = all passed, red = any failure/error) and, on failure, lists up to 10 failing test node IDs directly in the embed.
 
@@ -262,6 +263,24 @@ To test the notification path locally before relying on the schedule:
 pytest --json-report --json-report-file=report.json
 DISCORD_WEBHOOK_URL="<your webhook url>" python scripts/notify_discord.py report.json
 ```
+
+### Turning a failure notification into tracked work
+
+A Discord ping is easy to miss, and even easier to see and then forget about by morning. The workflow closes that gap: on failure, it automatically opens (or updates) one GitHub Issue; when the suite passes again, it closes that same issue.
+
+**The easy way to think about it:** it's a light-switch, not a bell that rings once. One issue tracks "is the nightly suite currently broken" — failing again just adds a comment to the *same* issue instead of piling up a new one every night, and the first passing run afterward closes it automatically. You never end up with 30 open issues for one ongoing outage.
+
+How it works, step by step:
+
+1. `gh label create nightly-failure --force` — makes sure the label exists; `--force` means it's a no-op if it's already there, so this is safe to run every single failing night.
+2. `gh issue list --label nightly-failure --state open` — checks whether there's already an open tracking issue.
+   - **None found** → `gh issue create` opens a new one, labeled `nightly-failure`, linking straight to the failed run.
+   - **One found** → `gh issue comment` adds "still failing as of run #N" to it instead of creating a duplicate.
+3. The next time the suite passes, a separate step checks for that same open issue and — if it finds one — comments "passed again, closing" and runs `gh issue close` on it.
+
+No webhook, no external service, no secret to set up — it authenticates as the workflow itself via `secrets.GITHUB_TOKEN`, which GitHub provides automatically to every workflow run. The only thing new here is the `permissions: issues: write` block at the top of the workflow file, since issue creation needs to be explicitly granted (it isn't part of the default read-only permissions).
+
+**Tradeoff:** this piggybacks on the same `report.json`-driven `steps.run_tests.outcome` check as the Discord notification, so it inherits the same signal — it can't tell "the API genuinely broke" apart from "DummyJSON rate-limited us hard tonight" (see [Known quirks](#known-quirks-of-the-target-api)). A noisy night can still open a real issue; that's a feature for the *first* failure (worth a look either way) but means the issue's title/body should be read with that caveat in mind, not treated as an automatic verdict on DummyJSON's health.
 
 ## Walkthrough: adding a new test
 
