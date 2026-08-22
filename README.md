@@ -249,6 +249,18 @@ To temporarily go back to declaration order (e.g. while debugging something unre
 
 **The Discord message is explicitly flagged as coming from pytest** — sent under the `pytest` username, with the embed footer reading `Source: pytest · <repo> · run #<n>`, so it's unambiguous in a channel that gets messages from other bots/CI tools too. It's color-coded (green = all passed, red = any failure/error) and, on failure, lists up to 10 failing test node IDs directly in the embed.
 
+**The embed also breaks results down per resource**, not just as one aggregate pass/fail count — a row per test file (`tests/test_auth.py` → "Auth", `tests/test_carts.py` → "Carts", and so on for products/users/posts, plus the JSON Schema and BDD tests), each showing a pass percentage and an at-a-glance icon. For example, if carts and posts were having a bad night while everything else was clean:
+
+```
+✅ Products           100% (16/16)
+✅ Users              100% (20/20)
+✅ Auth               100% (10/10)
+⚠️ Carts              50% (1/2)
+❌ Posts              0% (0/2)
+```
+
+`✅` means every test in that file passed, `⚠️` means some did, `❌` means none did — so "did auth actually pass tonight" is answerable at a glance instead of having to open the Actions log. `scripts/notify_discord.py`'s `group_key()` derives the label straight from each test's file path (`tests/test_auth.py::TestLogin::test_x` → `auth` → `Auth`), so a new resource's tests show up automatically the moment its test file exists — nothing to register by hand.
+
 **One-time setup required** (not something this repo can do for you):
 
 1. In Discord: **Server Settings → Integrations → Webhooks → New Webhook**, pick the channel, copy the webhook URL.

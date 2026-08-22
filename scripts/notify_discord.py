@@ -9,6 +9,7 @@ import json
 import os
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 import requests
 
@@ -17,6 +18,11 @@ COLOR_FAIL = 0xE74C3C
 
 MAX_FAILURES_LISTED = 10
 DISCORD_FIELD_VALUE_LIMIT = 1024
+
+# Known resources listed first, in CLAUDE.md's build order; anything else
+# (schema validation, the BDD prototype, future resources) sorts after,
+# alphabetically, rather than being dropped.
+RESOURCE_PRIORITY = ["products", "users", "auth", "carts", "posts"]
 
 
 def load_summary(report_path):
@@ -27,7 +33,45 @@ def load_summary(report_path):
     summary["duration"] = report.get("duration", 0.0)
     tests = report.get("tests", [])
     failures = [t for t in tests if t.get("outcome") in ("failed", "error")]
-    return summary, failures
+    return summary, failures, tests
+
+
+def group_key(nodeid):
+    file_path = nodeid.split("::", 1)[0]
+    stem = Path(file_path).stem  # "tests/test_auth.py" -> "test_auth"
+    return stem[len("test_"):] if stem.startswith("test_") else stem
+
+
+def humanize_group(name):
+    if name.endswith("_bdd"):
+        return f"{name[:-len('_bdd')].replace('_', ' ').title()} (BDD)"
+    return name.replace("_", " ").title()
+
+
+def build_resource_breakdown(tests):
+    groups = {}
+    for test in tests:
+        stats = groups.setdefault(group_key(test["nodeid"]), {"passed": 0, "total": 0})
+        stats["total"] += 1
+        if test.get("outcome") == "passed":
+            stats["passed"] += 1
+
+    ordered_keys = [key for key in RESOURCE_PRIORITY if key in groups]
+    ordered_keys += sorted(key for key in groups if key not in RESOURCE_PRIORITY)
+
+    breakdown = []
+    for key in ordered_keys:
+        passed, total = groups[key]["passed"], groups[key]["total"]
+        pct = (passed / total * 100) if total else 0
+        icon = "✅" if passed == total else ("❌" if passed == 0 else "⚠️")
+        breakdown.append(
+            {
+                "name": f"{icon} {humanize_group(key)}",
+                "value": f"{pct:.0f}% ({passed}/{total})",
+                "inline": True,
+            }
+        )
+    return breakdown
 
 
 def format_failures(failures):
@@ -47,7 +91,7 @@ def format_failures(failures):
     return value[:DISCORD_FIELD_VALUE_LIMIT]
 
 
-def build_payload(summary, failures):
+def build_payload(summary, failures, tests):
     passed = summary.get("passed", 0)
     failed = summary.get("failed", 0)
     errors = summary.get("error", 0)
@@ -72,6 +116,8 @@ def build_payload(summary, failures):
         {"name": "Total", "value": str(total), "inline": True},
         {"name": "Duration", "value": f"{duration:.2f}s", "inline": True},
     ]
+
+    fields.extend(build_resource_breakdown(tests))
 
     failures_text = format_failures(failures)
     if failures_text:
@@ -99,8 +145,8 @@ def main():
         print("DISCORD_WEBHOOK_URL is not set - skipping Discord notification.", file=sys.stderr)
         sys.exit(1)
 
-    summary, failures = load_summary(report_path)
-    payload = build_payload(summary, failures)
+    summary, failures, tests = load_summary(report_path)
+    payload = build_payload(summary, failures, tests)
 
     response = requests.post(webhook_url, json=payload, timeout=15)
     response.raise_for_status()
