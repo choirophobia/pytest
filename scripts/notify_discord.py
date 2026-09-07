@@ -22,7 +22,7 @@ DISCORD_FIELD_VALUE_LIMIT = 1024
 # Known resources listed first, in CLAUDE.md's build order; anything else
 # (schema validation, the BDD prototype, future resources) sorts after,
 # alphabetically, rather than being dropped.
-RESOURCE_PRIORITY = ["products", "users", "auth", "carts", "posts"]
+RESOURCE_PRIORITY = ["products", "users", "auth", "carts", "posts", "comments", "todos", "quotes", "recipes"]
 
 
 def load_summary(report_path):
