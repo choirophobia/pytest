@@ -52,9 +52,7 @@ class TestCreate:
 
         response = recipes_api.create(payload)
 
-        # Unlike posts/todos/comments (201), DummyJSON's recipes/add echoes
-        # back with 200 - a known quirk of the target API, not a test bug.
-        assert response.status_code == 200
+        assert response.status_code == 201
         body = response.json()
         assert body["name"] == payload["name"]
         assert body["ingredients"] == payload["ingredients"]
