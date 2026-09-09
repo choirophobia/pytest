@@ -6,6 +6,10 @@ name: Nightly API Test Suite
     - cron: "0 23 * * *"
   workflow_dispatch: {}
 
+permissions:
+  contents: read
+  issues: write
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -39,6 +43,46 @@ jobs:
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: python scripts/notify_discord.py report.json
+
+      - name: Ensure the nightly-failure label exists
+        if: steps.run_tests.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh label create nightly-failure --repo "$GITHUB_REPOSITORY" \
+            --color d73a4a --description "Nightly CI run against DummyJSON failed" --force
+
+      - name: File or update tracking issue on failure
+        if: steps.run_tests.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          EXISTING=$(gh issue list --repo "$GITHUB_REPOSITORY" --label nightly-failure --state open --json number --jq '.[0].number')
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --repo "$GITHUB_REPOSITORY" \
+              --body "Still failing as of run #${GITHUB_RUN_NUMBER}: ${RUN_URL}"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" \
+              --title "Nightly test suite failed ($(date -u +%Y-%m-%d))" \
+              --label nightly-failure \
+              --body "The nightly pytest run against DummyJSON failed. See the run for details: ${RUN_URL}"
+          fi
+
+      - name: Close tracking issue if the suite is green again
+        if: steps.run_tests.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          EXISTING=$(gh issue list --repo "$GITHUB_REPOSITORY" --label nightly-failure --state open --json number --jq '.[0].number')
+          if [ -n "$EXISTING" ]; then
+            RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            gh issue comment "$EXISTING" --repo "$GITHUB_REPOSITORY" \
+              --body "Suite passed again as of run #${GITHUB_RUN_NUMBER}: ${RUN_URL}. Closing."
+            gh issue close "$EXISTING" --repo "$GITHUB_REPOSITORY"
+          fi
 
       - name: Fail workflow if tests failed
         if: steps.run_tests.outcome == 'failure'

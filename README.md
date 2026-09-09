@@ -1,5 +1,7 @@
 # DummyJSON API Tests (pytest)
 
+[![Nightly API Test Suite](https://github.com/choirophobia/pytest/actions/workflows/nightly-tests.yml/badge.svg)](https://github.com/choirophobia/pytest/actions/workflows/nightly-tests.yml)
+
 An end-to-end API test suite against the live [DummyJSON](https://dummyjson.com) API, built with `pytest` and `requests`. It's a QA practice/portfolio project that demonstrates CRUD testing, auth-flow testing, and negative/error-case testing against a real HTTP API — no mocks, no local server.
 
 This is the pytest/Python port of a sibling Jest/JavaScript suite: same target API, same resource coverage, same test cases, different stack. If you already know one, the other should feel familiar.
@@ -37,7 +39,7 @@ pytest                            # run the whole suite
 You should see something like:
 
 ```
-======================== 73 passed in ~15s ========================
+======================== 109 passed in ~20s ========================
 ```
 
 No API keys, no `.env` file, no local server to start — `tests/` talks straight to `https://dummyjson.com`.
@@ -47,18 +49,26 @@ No API keys, no `.env` file, no local server to start — `tests/` talks straigh
 ```
 services/
 ├── api_client.py     # BASE_URL + one shared requests.Session
-├── products_api.py   # ProductsApi — wraps every /products endpoint
-├── users_api.py       # UsersApi   — wraps every /users endpoint
-├── auth_api.py        # AuthApi    — login / me / refresh
-├── carts_api.py        # CartsApi   — wraps every /carts endpoint
-└── posts_api.py         # PostsApi   — wraps every /posts endpoint
+├── products_api.py   # ProductsApi  — wraps every /products endpoint
+├── users_api.py      # UsersApi     — wraps every /users endpoint
+├── auth_api.py       # AuthApi      — login / me / refresh
+├── carts_api.py      # CartsApi     — wraps every /carts endpoint
+├── posts_api.py      # PostsApi     — wraps every /posts endpoint
+├── comments_api.py   # CommentsApi  — wraps every /comments endpoint
+├── todos_api.py       # TodosApi     — wraps every /todos endpoint
+├── quotes_api.py       # QuotesApi    — wraps every /quotes endpoint (read-only)
+└── recipes_api.py       # RecipesApi   — wraps every /recipes endpoint
 
 tests/
 ├── test_products.py   # one file per resource, mirrors services/
 ├── test_users.py
 ├── test_auth.py
 ├── test_carts.py
-└── test_posts.py
+├── test_posts.py
+├── test_comments.py
+├── test_todos.py
+├── test_quotes.py
+└── test_recipes.py
 
 conftest.py             # shared fixtures: valid_credentials, auth_tokens, auth_token
 pytest.ini              # registers the `negative` marker
@@ -246,9 +256,24 @@ To temporarily go back to declaration order (e.g. while debugging something unre
 2. `pytest -v --json-report --json-report-file=report.json` — the [`pytest-json-report`](https://pypi.org/project/pytest-json-report/) plugin writes a structured summary (pass/fail/error/skip counts, per-test outcomes, duration) alongside the normal console output. The step uses `continue-on-error: true` so a red test run doesn't skip the notification step below.
 3. `report.json` is uploaded as a build artifact (14-day retention) for when you need the full detail, not just the summary.
 4. `scripts/notify_discord.py report.json` builds a Discord embed from the report and posts it to your webhook — this always runs (`if: always()`), pass or fail.
-5. A final step re-fails the job if the test step failed, so the Actions tab still shows red — `continue-on-error` in step 2 only exists to let the notification step run, it doesn't hide real failures.
+5. On failure: files or updates a tracking GitHub Issue (see below). On success: closes that tracking issue if one was still open.
+6. A final step re-fails the job if the test step failed, so the Actions tab still shows red — `continue-on-error` in step 2 only exists to let steps 3-5 run regardless of outcome, it doesn't hide real failures.
+
+**The badge at the top of this README** is GitHub's own workflow status badge (`.../actions/workflows/nightly-tests.yml/badge.svg`) — no setup, no external service, it's just a URL GitHub generates automatically for every workflow file. It reflects the *most recent* run (scheduled or manual), so it's a live, no-click answer to "is the nightly suite currently green against the real API," visible to anyone who opens the repo. Clicking it goes straight to the Actions run history.
 
 **The Discord message is explicitly flagged as coming from pytest** — sent under the `pytest` username, with the embed footer reading `Source: pytest · <repo> · run #<n>`, so it's unambiguous in a channel that gets messages from other bots/CI tools too. It's color-coded (green = all passed, red = any failure/error) and, on failure, lists up to 10 failing test node IDs directly in the embed.
+
+**The embed also breaks results down per resource**, not just as one aggregate pass/fail count — a row per test file (`tests/test_auth.py` → "Auth", `tests/test_carts.py` → "Carts", and so on for products/users/posts, plus the JSON Schema and BDD tests), each showing a pass percentage and an at-a-glance icon. For example, if carts and posts were having a bad night while everything else was clean:
+
+```
+✅ Products           100% (16/16)
+✅ Users              100% (20/20)
+✅ Auth               100% (10/10)
+⚠️ Carts              50% (1/2)
+❌ Posts              0% (0/2)
+```
+
+`✅` means every test in that file passed, `⚠️` means some did, `❌` means none did — so "did auth actually pass tonight" is answerable at a glance instead of having to open the Actions log. `scripts/notify_discord.py`'s `group_key()` derives the label straight from each test's file path (`tests/test_auth.py::TestLogin::test_x` → `auth` → `Auth`), so a new resource's tests show up automatically the moment its test file exists — nothing to register by hand.
 
 **One-time setup required** (not something this repo can do for you):
 
@@ -263,6 +288,24 @@ To test the notification path locally before relying on the schedule:
 pytest --json-report --json-report-file=report.json
 DISCORD_WEBHOOK_URL="<your webhook url>" python scripts/notify_discord.py report.json
 ```
+
+### Turning a failure notification into tracked work
+
+A Discord ping is easy to miss, and even easier to see and then forget about by morning. The workflow closes that gap: on failure, it automatically opens (or updates) one GitHub Issue; when the suite passes again, it closes that same issue.
+
+**The easy way to think about it:** it's a light-switch, not a bell that rings once. One issue tracks "is the nightly suite currently broken" — failing again just adds a comment to the *same* issue instead of piling up a new one every night, and the first passing run afterward closes it automatically. You never end up with 30 open issues for one ongoing outage.
+
+How it works, step by step:
+
+1. `gh label create nightly-failure --force` — makes sure the label exists; `--force` means it's a no-op if it's already there, so this is safe to run every single failing night.
+2. `gh issue list --label nightly-failure --state open` — checks whether there's already an open tracking issue.
+   - **None found** → `gh issue create` opens a new one, labeled `nightly-failure`, linking straight to the failed run.
+   - **One found** → `gh issue comment` adds "still failing as of run #N" to it instead of creating a duplicate.
+3. The next time the suite passes, a separate step checks for that same open issue and — if it finds one — comments "passed again, closing" and runs `gh issue close` on it.
+
+No webhook, no external service, no secret to set up — it authenticates as the workflow itself via `secrets.GITHUB_TOKEN`, which GitHub provides automatically to every workflow run. The only thing new here is the `permissions: issues: write` block at the top of the workflow file, since issue creation needs to be explicitly granted (it isn't part of the default read-only permissions).
+
+**Tradeoff:** this piggybacks on the same `report.json`-driven `steps.run_tests.outcome` check as the Discord notification, so it inherits the same signal — it can't tell "the API genuinely broke" apart from "DummyJSON rate-limited us hard tonight" (see [Known quirks](#known-quirks-of-the-target-api)). A noisy night can still open a real issue; that's a feature for the *first* failure (worth a look either way) but means the issue's title/body should be read with that caveat in mind, not treated as an automatic verdict on DummyJSON's health.
 
 ## Walkthrough: adding a new test
 
@@ -302,6 +345,10 @@ That's the whole pattern: **call the service method, assert on `response.status_
 | Auth | — | `POST /auth/login`, `GET /auth/me` (Bearer token) | `POST /auth/refresh` | — |
 | Carts | `POST /carts/add` | `GET /carts`, `/carts/{id}`, `/carts/user/{userId}` | `PUT`/`PATCH /carts/{id}` | `DELETE /carts/{id}` |
 | Posts | `POST /posts/add` | `GET /posts`, `/posts/{id}`, `/posts/search?q=`, `/posts/user/{userId}` | `PUT`/`PATCH /posts/{id}` | `DELETE /posts/{id}` |
+| Comments | `POST /comments/add` | `GET /comments`, `/comments/{id}`, `/comments/post/{postId}` | `PUT`/`PATCH /comments/{id}` | `DELETE /comments/{id}` |
+| Todos | `POST /todos/add` | `GET /todos`, `/todos/{id}`, `/todos/random`, `/todos/user/{userId}` | `PUT`/`PATCH /todos/{id}` | `DELETE /todos/{id}` |
+| Quotes | — (read-only) | `GET /quotes`, `/quotes/{id}`, `/quotes/random` | — | — |
+| Recipes | `POST /recipes/add` | `GET /recipes`, `/recipes/{id}`, `/recipes/search?q=`, `/recipes/tag/{tag}` | `PUT`/`PATCH /recipes/{id}` | `DELETE /recipes/{id}` |
 
 Full docs: [dummyjson.com/docs](https://dummyjson.com/docs).
 
@@ -311,6 +358,7 @@ These aren't bugs in the suite — they're real, verified behaviors of the live 
 
 - **Writes don't persist.** `POST`/`PUT`/`PATCH`/`DELETE` all return a response as if the write happened (echoing your payload, or an `isDeleted`/`deletedOn` pair), but nothing is actually saved server-side. Tests assert on the response shape, not on a follow-up `GET` reflecting the change.
 - **Occasional `429` instead of `404`.** Under repeated runs, "not found" lookups (and even some writes) can get rate-limited rather than cleanly 404ing. Negative tests for out-of-range IDs assert `status_code in (404, 429)` instead of a strict `== 404`.
+- **The rate limit is real and easy to hit now that the suite is bigger.** DummyJSON returns `x-ratelimit-limit: 100` (and a matching `x-ratelimit-remaining`/`x-ratelimit-reset`) on every response — a hard 100-requests-per-window budget, verified via response headers. At 109 tests (most making one request, some more), a single full sequential `pytest` run can legitimately exceed that window and produce scattered `429`s on ordinary reads/writes, not just the "not found" cases already tolerated above. This isn't specific to any one resource or a bug introduced by adding comments/todos/quotes/recipes — it's an artifact of total suite size against a fixed external budget. If a run looks noisy with `429`s outside the negative-case tests, rerun once the window resets (`x-ratelimit-reset` is a Unix timestamp) rather than assuming something regressed.
 - **`GET /auth/me` cookie fallback.** `POST /auth/login` sets `accessToken`/`refreshToken` cookies on top of returning them in the JSON body. Because all service objects share one `requests.Session` for connection reuse, a later "no token" call would silently succeed on those leftover cookies if not handled — `AuthApi.me()` explicitly clears the session's cookies when called without a token, so the "missing token" negative test is genuinely unauthenticated.
 - **Invalid JWTs can return `500`.** A syntactically-invalid bearer token on `GET /auth/me` has been observed to return `500` rather than `401`/`403`. That specific negative test accepts all three (`401`, `403`, `500`).
 - **ID validation isn't consistent across resources.** A non-numeric ID on `/products/{id}` returns `404` (treated as "not found"), but the same shape of request on `/users/{id}` returns `400` (treated as a malformed request). `test_products.py` and `test_users.py` each assert what their resource actually does rather than assuming the two are interchangeable — don't copy a negative-case assertion from one resource's test file into another's without checking live.
@@ -319,15 +367,17 @@ These aren't bugs in the suite — they're real, verified behaviors of the live 
 - **`PUT` merges instead of replacing.** By HTTP convention, `PUT` implies a full replacement of the resource. DummyJSON's `PUT /products/{id}` and `PUT /users/{id}` don't do that — the echoed response still carries every field you didn't send, identically to `PATCH`. Update tests assert that untouched fields (e.g. `price`, `email`) are still present in a `PUT` response rather than assuming they'd be dropped.
 - **Carts have their own explicit `merge` flag.** Unlike products/users, `PUT`/`PATCH /carts/{id}` don't merge implicitly — the request body needs `"merge": true` to add/update the given products into the existing cart rather than replacing its product list outright. `test_updates_a_cart_with_put`/`test_partially_updates_a_cart_with_patch` send `merge: true` and assert the cart's original products survive alongside the new one, rather than being wiped out.
 - **Cart totals are internally consistent and worth cross-checking.** Every cart response carries `totalProducts`/`totalQuantity` alongside the `products` array itself - `totalProducts == len(products)` and `totalQuantity == sum(p["quantity"] for p in products)` hold on every cart tested (list, single, create, and both update variants). Asserting that relationship catches a broken total even if the product list itself looks fine.
+- **Quotes is read-only.** Unlike every other resource here, DummyJSON exposes no `POST`/`PUT`/`PATCH`/`DELETE` for `/quotes` — those verbs 404 (a proper "not found" page, not JSON). `services/quotes_api.py` only implements `list`/`get_by_id`/`get_random`, and `test_quotes.py` has no `TestCreate`/`TestUpdate`/`TestDelete` classes as a result — there's nothing to write those against.
+- **`POST /recipes/add` returns `200`, not `201`.** Every other resource's create endpoint (`products`, `users`, `posts`, `comments`, `todos`) returns `201 Created`. Recipes is the one exception, verified live with `curl` — `test_creates_a_new_recipe` asserts `200` and says so in a comment, so it doesn't read as a copy-paste mistake from the other `TestCreate` classes.
 
 ## Extending to a new resource
 
-To cover a resource not yet in this suite (comments, todos, quotes, recipes — see `CLAUDE.md`):
+Every resource from `CLAUDE.md`'s roadmap (products, users, auth, carts, posts, comments, todos, quotes, recipes) is now covered. To add one beyond that list:
 
 1. Confirm the exact endpoints/params in the [DummyJSON docs](https://dummyjson.com/docs).
 2. Add `services/<resource>_api.py` following the existing services as a template — one method per endpoint, all going through the shared `session`.
 3. Add `tests/test_<resource>.py` with `TestRead` / `TestCreate` / `TestUpdate` / `TestDelete` / `TestNegativeCases` classes.
-4. Run `pytest tests/test_<resource>.py -v` and confirm real API responses match your assertions before trusting the test — DummyJSON's response shapes vary by resource (e.g. `categories` returns objects, not strings) and are worth checking with a quick `curl` first.
+4. Run `pytest tests/test_<resource>.py -v` and confirm real API responses match your assertions before trusting the test — DummyJSON's response shapes and status codes vary by resource (e.g. `categories` returns objects not strings, and `recipes/add` returns `200` where most creates return `201`) and are worth checking with a quick `curl` first.
 
 ## Cucumber/BDD prototype
 
