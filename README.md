@@ -16,6 +16,7 @@ This is the pytest/Python port of a sibling Jest/JavaScript suite: same target A
 - [Running tests](#running-tests)
 - [JSON Schema validation](#json-schema-validation)
 - [Test order randomization (pytest-randomly)](#test-order-randomization-pytest-randomly)
+- [Automatic retry on rate limiting](#automatic-retry-on-rate-limiting)
 - [CI/CD: nightly run + Discord notifications](#cicd-nightly-run--discord-notifications)
 - [Walkthrough: adding a new test](#walkthrough-adding-a-new-test)
 - [Endpoint reference](#endpoint-reference)
@@ -246,6 +247,32 @@ To temporarily go back to declaration order (e.g. while debugging something unre
 
 **One important thing this surfaced along the way:** one of the repeated runs above took over 4 minutes instead of the usual ~15 seconds — not an order-dependence bug, but a stalled connection to the live API hanging silently, because `services/api_client.py`'s shared session never set a request timeout. `requests` has no session-level default timeout on its own, so a single slow/stuck response could hang a test (and a CI run) indefinitely instead of failing fast. Fixed alongside this change: the shared session now wraps `requests.Session.request` to inject a 15-second default timeout on every call unless a caller explicitly overrides it — verified against a non-routable address to confirm it actually raises `requests.exceptions.Timeout` rather than hanging.
 
+## Automatic retry on rate limiting
+
+DummyJSON enforces a hard 100-requests-per-window rate limit (see [Known quirks](#known-quirks-of-the-target-api)), and the suite growing to 109 tests means a single full sequential run can legitimately exceed it — not a bug in any one test, just more requests than the external budget allows. This became more urgent than "occasionally annoying" once [the nightly workflow started auto-filing a GitHub Issue on any failure](#turning-a-failure-notification-into-tracked-work): a rate-limit blip could open a false-alarm issue for a run where nothing actually broke.
+
+`services/api_client.py`'s shared session now mounts a `urllib3.util.retry.Retry` policy on every request, transparently, so no individual test or service method had to change:
+
+```python
+_rate_limit_retry = Retry(
+    total=3,
+    backoff_factor=1,
+    status_forcelist=(429,),
+    allowed_methods=frozenset(["GET", "POST", "PUT", "PATCH", "DELETE"]),
+    respect_retry_after_header=True,
+    raise_on_status=False,
+)
+```
+
+- **`status_forcelist=(429,)` only** — not `5xx`. A `500` (like the invalid-JWT quirk documented above) is a real, meaningful signal worth seeing immediately, not something to paper over with a retry.
+- **`allowed_methods` includes every verb this suite uses**, including `POST`/`PATCH` — urllib3's own default excludes those because retrying a non-idempotent write is usually unsafe. Here it's safe: DummyJSON's writes are simulated and never persisted (see [Known quirks](#known-quirks-of-the-target-api)), so a retried create/update can't produce a duplicate real side effect.
+- **`respect_retry_after_header=True`** honors the API's own `Retry-After` header (observed as `10` seconds under load) instead of guessing a delay — falling back to `backoff_factor`-based exponential backoff (1s, 2s, 4s) only if the header is absent.
+- **`raise_on_status=False`** is the detail that keeps this from being a breaking change: if all 3 retries are exhausted and the response is still `429`, the adapter returns that response instead of raising `requests.exceptions.RetryError`. Every negative test that already asserts `status_code in (404, 429)` keeps behaving exactly as before if the rate limit genuinely doesn't clear in time — it doesn't need to also catch a new exception type.
+
+**Verified without spending more of the live API's rate budget:** a local `http.server` instance was set up to return `429` (with `Retry-After: 1`) twice before succeeding — confirmed the session retries and returns the eventual `200` after ~2 seconds. A second local server returning `429` unconditionally confirmed the exhausted-retry path returns the final `429` response rather than raising. Both were checked against a throwaway `requests.Session` with the same `Retry` config before being wired into `services/api_client.py`, precisely to avoid needing to reproduce a live 429 (which requires 100 real requests to trigger) just to test the retry logic itself.
+
+**Tradeoff:** a request that hits the rate limit now takes longer to fail (or succeed) instead of failing fast — worst case, a few seconds per retried call, which is the right trade for a test suite that would otherwise report a false failure. It does *not* change what counts as a "real" failure: a genuinely broken endpoint (a `500`, a `404` on something that should exist) still fails immediately, on the first attempt, same as before.
+
 ## CI/CD: nightly run + Discord notifications
 
 `.github/workflows/nightly-tests.yml` runs the full suite automatically **every day at 06:00 WIB** (`0 23 * * *` in UTC — WIB is UTC+7 with no DST, so 23:00 UTC the day before lines up with 06:00 WIB), and can also be triggered manually from the Actions tab (`workflow_dispatch`).
@@ -358,7 +385,7 @@ These aren't bugs in the suite — they're real, verified behaviors of the live 
 
 - **Writes don't persist.** `POST`/`PUT`/`PATCH`/`DELETE` all return a response as if the write happened (echoing your payload, or an `isDeleted`/`deletedOn` pair), but nothing is actually saved server-side. Tests assert on the response shape, not on a follow-up `GET` reflecting the change.
 - **Occasional `429` instead of `404`.** Under repeated runs, "not found" lookups (and even some writes) can get rate-limited rather than cleanly 404ing. Negative tests for out-of-range IDs assert `status_code in (404, 429)` instead of a strict `== 404`.
-- **The rate limit is real and easy to hit now that the suite is bigger.** DummyJSON returns `x-ratelimit-limit: 100` (and a matching `x-ratelimit-remaining`/`x-ratelimit-reset`) on every response — a hard 100-requests-per-window budget, verified via response headers. At 109 tests (most making one request, some more), a single full sequential `pytest` run can legitimately exceed that window and produce scattered `429`s on ordinary reads/writes, not just the "not found" cases already tolerated above. This isn't specific to any one resource or a bug introduced by adding comments/todos/quotes/recipes — it's an artifact of total suite size against a fixed external budget. If a run looks noisy with `429`s outside the negative-case tests, rerun once the window resets (`x-ratelimit-reset` is a Unix timestamp) rather than assuming something regressed.
+- **The rate limit is real, and is now retried automatically.** DummyJSON returns `x-ratelimit-limit: 100` (and a matching `x-ratelimit-remaining`/`x-ratelimit-reset`) on every response — a hard 100-requests-per-window budget, verified via response headers. At 109 tests, a single full sequential `pytest` run can legitimately exceed that window. `services/api_client.py`'s shared session now retries a `429` up to 3 times (honoring the API's `Retry-After` header, falling back to exponential backoff) before giving up — see [Automatic retry on rate limiting](#automatic-retry-on-rate-limiting) below. Negative-case tests that already assert `status_code in (404, 429)` are unaffected either way: retries exhausting still return the final `429` response rather than raising, so that tolerance is still doing real work if the rate limit doesn't clear in time.
 - **`GET /auth/me` cookie fallback.** `POST /auth/login` sets `accessToken`/`refreshToken` cookies on top of returning them in the JSON body. Because all service objects share one `requests.Session` for connection reuse, a later "no token" call would silently succeed on those leftover cookies if not handled — `AuthApi.me()` explicitly clears the session's cookies when called without a token, so the "missing token" negative test is genuinely unauthenticated.
 - **Invalid JWTs can return `500`.** A syntactically-invalid bearer token on `GET /auth/me` has been observed to return `500` rather than `401`/`403`. That specific negative test accepts all three (`401`, `403`, `500`).
 - **ID validation isn't consistent across resources.** A non-numeric ID on `/products/{id}` returns `404` (treated as "not found"), but the same shape of request on `/users/{id}` returns `400` (treated as a malformed request). `test_products.py` and `test_users.py` each assert what their resource actually does rather than assuming the two are interchangeable — don't copy a negative-case assertion from one resource's test file into another's without checking live.
@@ -368,7 +395,7 @@ These aren't bugs in the suite — they're real, verified behaviors of the live 
 - **Carts have their own explicit `merge` flag.** Unlike products/users, `PUT`/`PATCH /carts/{id}` don't merge implicitly — the request body needs `"merge": true` to add/update the given products into the existing cart rather than replacing its product list outright. `test_updates_a_cart_with_put`/`test_partially_updates_a_cart_with_patch` send `merge: true` and assert the cart's original products survive alongside the new one, rather than being wiped out.
 - **Cart totals are internally consistent and worth cross-checking.** Every cart response carries `totalProducts`/`totalQuantity` alongside the `products` array itself - `totalProducts == len(products)` and `totalQuantity == sum(p["quantity"] for p in products)` hold on every cart tested (list, single, create, and both update variants). Asserting that relationship catches a broken total even if the product list itself looks fine.
 - **Quotes is read-only.** Unlike every other resource here, DummyJSON exposes no `POST`/`PUT`/`PATCH`/`DELETE` for `/quotes` — those verbs 404 (a proper "not found" page, not JSON). `services/quotes_api.py` only implements `list`/`get_by_id`/`get_random`, and `test_quotes.py` has no `TestCreate`/`TestUpdate`/`TestDelete` classes as a result — there's nothing to write those against.
-- **`POST /recipes/add` returns `200`, not `201`.** Every other resource's create endpoint (`products`, `users`, `posts`, `comments`, `todos`) returns `201 Created`. Recipes is the one exception, verified live with `curl` — `test_creates_a_new_recipe` asserts `200` and says so in a comment, so it doesn't read as a copy-paste mistake from the other `TestCreate` classes.
+- **A "verified live" quirk can stop being true.** `POST /recipes/add` was observed returning `200` instead of `201` when this resource was first added, and `test_creates_a_new_recipe` was written to match. Re-verified live two days later: it now returns `201`, consistently, matching every other create endpoint. The test now asserts `201` like the rest — the earlier behavior wasn't a misread, it just didn't hold. Worth remembering next time a "known quirk" here looks suspicious: re-check live before assuming the test is wrong rather than the API having changed underneath it.
 
 ## Extending to a new resource
 
@@ -377,7 +404,7 @@ Every resource from `CLAUDE.md`'s roadmap (products, users, auth, carts, posts, 
 1. Confirm the exact endpoints/params in the [DummyJSON docs](https://dummyjson.com/docs).
 2. Add `services/<resource>_api.py` following the existing services as a template — one method per endpoint, all going through the shared `session`.
 3. Add `tests/test_<resource>.py` with `TestRead` / `TestCreate` / `TestUpdate` / `TestDelete` / `TestNegativeCases` classes.
-4. Run `pytest tests/test_<resource>.py -v` and confirm real API responses match your assertions before trusting the test — DummyJSON's response shapes and status codes vary by resource (e.g. `categories` returns objects not strings, and `recipes/add` returns `200` where most creates return `201`) and are worth checking with a quick `curl` first.
+4. Run `pytest tests/test_<resource>.py -v` and confirm real API responses match your assertions before trusting the test — DummyJSON's response shapes and status codes vary by resource (e.g. `categories` returns objects, not strings) and are worth checking with a quick `curl` first.
 
 ## Cucumber/BDD prototype
 
