@@ -1,0 +1,112 @@
+openapi: 3.0.3
+info:
+  title: DummyJSON Products (unofficial, hand-written)
+  version: "1.0"
+  description: >
+    DummyJSON does not publish a machine-readable OpenAPI/Swagger spec -
+    verified live: both /openapi.json and /swagger.json return 404, and
+    /docs is a plain HTML documentation page, not a spec file. This is
+    hand-written from verified live responses, covering only the
+    read-only product endpoints, for use with schemathesis. See the
+    README's schemathesis section for what that means for how much this
+    can be trusted.
+servers:
+  - url: https://dummyjson.com
+paths:
+  /products/{id}:
+    get:
+      operationId: getProductById
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: A single product
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Product"
+        "404":
+          description: Not found
+  /products:
+    get:
+      operationId: listProducts
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 100
+        - name: skip
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+      responses:
+        "200":
+          description: A page of products
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [products, total, skip, limit]
+                properties:
+                  products:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Product"
+                  total:
+                    type: integer
+                  skip:
+                    type: integer
+                  limit:
+                    type: integer
+components:
+  schemas:
+    Product:
+      type: object
+      required:
+        - id
+        - title
+        - description
+        - category
+        - price
+        - discountPercentage
+        - rating
+        - stock
+        - tags
+        - images
+        - thumbnail
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        description:
+          type: string
+        category:
+          type: string
+        price:
+          type: number
+        discountPercentage:
+          type: number
+        rating:
+          type: number
+        stock:
+          type: integer
+        tags:
+          type: array
+          items:
+            type: string
+        images:
+          type: array
+          items:
+            type: string
+        thumbnail:
+          type: string
